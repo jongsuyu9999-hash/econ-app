@@ -1,0 +1,67 @@
+name: 경제 브리핑 생성·배포
+
+on:
+  schedule:
+    # GitHub 일정은 UTC 기준이며 실행이 몇 분~수십 분 늦어질 수 있어요.
+    - cron: "30 22 * * 0-4"   # 아침: 한국시간 월~금 07:30 (전날 미국장 마감 후)
+    - cron: "40 6 * * 1-5"    # 저녁: 한국시간 월~금 15:40 (국내장 마감 후)
+  workflow_dispatch: {}       # Actions 탭에서 수동 실행
+  push:
+    branches: [main]
+    paths-ignore: ["public/data/**"]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: briefing
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: 브리핑 생성
+        if: github.event_name != 'push'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: npm run build
+
+      - name: 처음 배포 시 샘플 데이터 준비
+        if: github.event_name == 'push'
+        run: test -f public/data/latest.json || npm run build:mock
+
+      - name: 데이터 저장 (지난 브리핑 보관용)
+        if: github.event_name != 'push'
+        run: |
+          git config user.name "briefing-bot"
+          git config user.email "briefing-bot@users.noreply.github.com"
+          git add public/data
+          git diff --cached --quiet || git commit -m "브리핑 $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M')"
+          git push
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
