@@ -1,5 +1,5 @@
 // 앱 화면은 캐시, 데이터는 항상 네트워크 우선 (오프라인이면 마지막으로 본 브리핑)
-const CACHE = "econ-v1";
+const CACHE = "econ-v2";
 const SHELL = ["./", "index.html", "style.css", "app.js", "manifest.webmanifest", "icon.svg"];
 
 self.addEventListener("install", (e) => {

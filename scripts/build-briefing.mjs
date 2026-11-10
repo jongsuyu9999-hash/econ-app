@@ -25,43 +25,93 @@ function kstNow() {
 }
 
 // ---------- 시세 (Yahoo Finance 차트 API) ----------
-async function fetchQuote(item) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(item.symbol)}?range=1mo&interval=1d`;
+async function fetchChart(symbol, range, interval) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}`;
   const res = await fetch(url, { headers: { "User-Agent": UA } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const json = await res.json();
-  const r = json?.chart?.result?.[0];
+  const r = (await res.json())?.chart?.result?.[0];
   if (!r) throw new Error("결과 없음");
-  const closes = (r.indicators?.quote?.[0]?.close || []).filter((v) => v != null);
-  const price = r.meta.regularMarketPrice ?? closes.at(-1);
-  // 전일 종가: 일봉 기준 직전 값 (meta.chartPreviousClose는 기간 시작가라 쓰지 않음)
-  let prev = closes.length >= 2 ? closes.at(-2) : r.meta.previousClose;
+  const q = r.indicators?.quote?.[0] ?? {};
+  const rows = (r.timestamp ?? []).map((t, i) => ({
+    t: t * 1000, o: q.open?.[i], h: q.high?.[i], l: q.low?.[i], c: q.close?.[i], v: q.volume?.[i],
+  })).filter((x) => x.c != null);
+  return { meta: r.meta, rows };
+}
+
+const round = (n) => (n == null ? null : Math.round(n * 10000) / 10000);
+const pts = (rows) => rows.map((x) => [x.t, round(x.c)]);
+
+// 종목 하나의 요약(홈 카드용)과 상세(차트·통계) 데이터를 함께 만듭니다.
+async function fetchQuote(item) {
+  const [daily, d1, d5] = await Promise.all([
+    fetchChart(item.symbol, "1y", "1d"),
+    fetchChart(item.symbol, "1d", "5m").catch(() => null),
+    fetchChart(item.symbol, "5d", "30m").catch(() => null),
+  ]);
+  const m = daily.meta;
+  const closes = daily.rows.map((x) => x.c);
+  const price = m.regularMarketPrice ?? closes.at(-1);
+  // 전일 종가: 일봉 기준 직전 값. 마지막 일봉이 현재가와 다르면(오늘 봉이 아직 없음) 마지막 일봉이 전일 종가.
+  let prev = closes.length >= 2 ? closes.at(-2) : m.previousClose;
   if (closes.length && Math.abs(closes.at(-1) - price) / price > 0.0001) prev = closes.at(-1);
-  return {
+  const today = daily.rows.at(-1) ?? {};
+  const year = daily.rows;
+
+  const summary = {
     ...item,
+    keywords: undefined,
     price,
+    prev,
     change: price - prev,
     changePct: ((price - prev) / prev) * 100,
     spark: closes.slice(-20),
-    time: r.meta.regularMarketTime ? new Date(r.meta.regularMarketTime * 1000).toISOString() : null,
+    time: m.regularMarketTime ? new Date(m.regularMarketTime * 1000).toISOString() : null,
   };
+
+  const detail = {
+    ...summary,
+    keywords: item.keywords ?? [item.name],
+    currency: m.currency,
+    exchange: m.fullExchangeName ?? m.exchangeName,
+    stats: {
+      open: today.o ?? null,
+      high: m.regularMarketDayHigh ?? today.h ?? null,
+      low: m.regularMarketDayLow ?? today.l ?? null,
+      prev,
+      volume: m.regularMarketVolume ?? today.v ?? null,
+      high52: m.fiftyTwoWeekHigh ?? Math.max(...year.map((x) => x.h ?? x.c)),
+      low52: m.fiftyTwoWeekLow ?? Math.min(...year.map((x) => x.l ?? x.c)),
+    },
+    charts: {
+      "1D": d1 ? pts(d1.rows) : [],
+      "1W": d5 ? pts(d5.rows) : pts(year.slice(-5)),
+      "1M": pts(year.slice(-22)),
+      "3M": pts(year.slice(-66)),
+      "1Y": pts(year),
+    },
+  };
+  return { summary, detail };
 }
 
 async function fetchMarkets() {
   const groups = [];
+  const details = [];
   for (const g of MARKETS) {
-    const items = await Promise.all(
+    const results = await Promise.all(
       g.items.map((it) =>
         fetchQuote(it).catch((e) => {
           console.warn(`⚠ 시세 실패 ${it.symbol}: ${e.message}`);
-          return { ...it, error: true };
+          return { summary: { ...it, keywords: undefined, error: true } };
         }),
       ),
     );
-    groups.push({ group: g.group, items });
+    groups.push({ group: g.group, items: results.map((r) => r.summary) });
+    for (const r of results) if (r.detail) details.push({ ...r.detail, group: g.group });
   }
-  return groups;
+  return { groups, details };
 }
+
+const symbolFile = (symbol) => symbol.replace(/[^A-Za-z0-9]/g, "_") + ".json";
 
 // ---------- 뉴스 (RSS) ----------
 const xml = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@" });
@@ -172,13 +222,25 @@ function mockData() {
   const rnd = (seed) => () => ((seed = (seed * 9301 + 49297) % 233280) / 233280);
   const r = rnd(42);
   const base = { "^KS11": 2650, "^KQ11": 760, "005930.KS": 72000, "000660.KS": 185000, "^GSPC": 5900, "^IXIC": 19000, "^DJI": 43000, "^SOX": 5100, "KRW=X": 1385, "JPYKRW=X": 9.05, "DX-Y.NYB": 104.2, "^TNX": 4.32, "CL=F": 71.5, "GC=F": 2650 };
+  const details = [];
+  const walk = (n, v, vol, stepMs, end) => Array.from({ length: n }, (_, i) => [end - (n - 1 - i) * stepMs, (v *= 1 + (r() - 0.5) * vol)]);
   const markets = MARKETS.map((g) => ({
     group: g.group,
     items: g.items.map((it) => {
-      let v = base[it.symbol] ?? 100;
-      const spark = Array.from({ length: 20 }, () => (v *= 1 + (r() - 0.5) * 0.02));
-      const prev = spark.at(-2), price = spark.at(-1);
-      return { ...it, price, change: price - prev, changePct: ((price - prev) / prev) * 100, spark };
+      const end = Date.now();
+      const year = walk(250, (base[it.symbol] ?? 100) * 0.85, 0.025, 86400e3, end);
+      const closes = year.map((p) => p[1]);
+      const prev = closes.at(-2);
+      const intraday = walk(78, prev, 0.003, 300e3, end);
+      const price = intraday.at(-1)[1];
+      year[year.length - 1][1] = price; closes[closes.length - 1] = price;
+      const summary = { ...it, keywords: undefined, price, prev, change: price - prev, changePct: ((price - prev) / prev) * 100, spark: closes.slice(-20) };
+      details.push({
+        ...summary, group: g.group, keywords: it.keywords ?? [it.name], currency: "KRW", exchange: "샘플",
+        stats: { open: prev * 1.001, high: Math.max(...intraday.map((p) => p[1])), low: Math.min(...intraday.map((p) => p[1])), prev, volume: 12345678, high52: Math.max(...closes), low52: Math.min(...closes) },
+        charts: { "1D": intraday, "1W": walk(65, closes.at(-6), 0.004, 1800e3, end), "1M": year.slice(-22), "3M": year.slice(-66), "1Y": year },
+      });
+      return summary;
     }),
   }));
   const now = Date.now();
@@ -192,7 +254,7 @@ function mockData() {
     points: ["샘플 요약입니다. 실제 배포 시 API 키를 넣으면 AI가 매번 새로 작성합니다.", "미국 기술주 강세가 국내 반도체주에 우호적으로 작용했습니다.", "환율은 1380원대에서 등락했습니다."],
     watch: ["미국 소비자물가지수 발표", "외국인 수급 방향"],
   };
-  return { markets, news, ai };
+  return { markets, details, news, ai };
 }
 
 // ---------- 저장 ----------
@@ -202,12 +264,14 @@ async function readJson(p, fallback) {
 
 async function main() {
   const t = kstNow();
-  let markets, news, ai = null;
+  let markets, details, news, ai = null;
 
   if (MOCK) {
-    ({ markets, news, ai } = mockData());
+    ({ markets, details, news, ai } = mockData());
   } else {
-    [markets, news] = await Promise.all([fetchMarkets(), fetchNews()]);
+    let m;
+    [m, news] = await Promise.all([fetchMarkets(), fetchNews()]);
+    ({ groups: markets, details } = m);
     try { ai = await summarize(markets, news, t.session); }
     catch (e) { console.warn("⚠", e.message); }
   }
@@ -225,6 +289,12 @@ async function main() {
   await mkdir(path.join(DATA_DIR, "archive"), { recursive: true });
   await writeFile(path.join(DATA_DIR, "latest.json"), JSON.stringify(briefing));
   await writeFile(path.join(DATA_DIR, "archive", `${id}.json`), JSON.stringify(briefing));
+
+  // 종목 상세 (차트·통계) — 항상 최신으로 덮어씀
+  await mkdir(path.join(DATA_DIR, "symbols"), { recursive: true });
+  for (const d of details) {
+    await writeFile(path.join(DATA_DIR, "symbols", symbolFile(d.symbol)), JSON.stringify({ ...d, generatedAt: t.iso }));
+  }
 
   const indexPath = path.join(DATA_DIR, "index.json");
   const index = (await readJson(indexPath, [])).filter((e) => e.id !== id);

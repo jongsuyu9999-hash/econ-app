@@ -14,6 +14,39 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <div id="detail" class="detail" hidden>
+    <header class="dtop">
+      <button id="back" class="back" aria-label="뒤로">‹</button>
+      <div class="dtitle">
+        <div id="d-name" class="dname"></div>
+        <div id="d-sub" class="muted small"></div>
+      </div>
+    </header>
+    <main>
+      <div class="dprice-wrap">
+        <div id="d-price" class="dprice"></div>
+        <div id="d-chg" class="dchg"></div>
+        <div id="d-when" class="muted small"></div>
+      </div>
+      <div class="chart-wrap">
+        <svg id="chart" class="chart" viewBox="0 0 360 200" preserveAspectRatio="none"></svg>
+        <div id="d-empty" class="muted small chart-empty" hidden>이 기간 차트가 없어요</div>
+      </div>
+      <div class="ranges" id="ranges"></div>
+      <section class="card">
+        <h3 class="sec">시세 정보</h3>
+        <div id="d-stats" class="stats"></div>
+        <div id="d-range52" class="range52"></div>
+      </section>
+      <section class="card">
+        <h3 class="sec">관련 뉴스</h3>
+        <ul id="d-news" class="news"></ul>
+      </section>
+      <p class="muted small center">하루 2번(아침·저녁) 갱신되는 정보예요. 실시간 시세가 아닙니다.</p>
+    </main>
+  </div>
+
+  <div id="home">
   <header class="top">
     <div>
       <h1>오늘의 경제</h1>
@@ -44,6 +77,7 @@
   <footer class="muted small">
     시세: Yahoo Finance (지연될 수 있음) · 뉴스: 각 언론사 RSS
   </footer>
+  </div>
 
   <script src="app.js" type="module"></script>
 </body>
